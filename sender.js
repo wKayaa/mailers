@@ -76,33 +76,55 @@ const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
 const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delayMs, port, concurrency) => {
   const secure = port === 465;
-  const transporter = nodemailer.createTransport({
-    host: config.smtp.host,
-    port,
-    secure,
-    auth: config.smtp.auth,
-  });
-
-  let sent = 0, failed = 0, subjectIndex = 0;
+  
+  // Use rotation configuration if enabled and available
+  const rotationEnabled = config.rotation?.enabled === true;
+  const senderNames = rotationEnabled && config.rotation?.senderNames ? config.rotation.senderNames : [fromName];
+  const smtpHosts = rotationEnabled && config.rotation?.smtpHosts ? config.rotation.smtpHosts : [config.smtp.host];
+  
+  let sent = 0, failed = 0, subjectIndex = 0, senderIndex = 0, hostIndex = 0;
   let i = 0;
+  
+  // Create multiple transporters for host rotation
+  const transporters = smtpHosts.map(host => 
+    nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: config.smtp.auth,
+    })
+  );
 
-  console.log(`📨 Envoi via ${config.smtp.host} (port ${port}) avec ${concurrency} envois simultanés...\n`.cyan);
+  if (rotationEnabled) {
+    console.log(`📨 Envoi avec rotation: ${senderNames.length} noms, ${smtpHosts.length} hosts, ${concurrency} envois simultanés...\n`.cyan);
+  } else {
+    console.log(`📨 Envoi via ${config.smtp.host} (port ${port}) avec ${concurrency} envois simultanés...\n`.cyan);
+  }
 
   while (i < recipients.length) {
     const batch = recipients.slice(i, i + concurrency);
 
     const results = await Promise.allSettled(batch.map((r, idx) => {
       const currentSubject = subjects[(subjectIndex + idx) % subjects.length];
+      const currentSenderName = senderNames[(senderIndex + idx) % senderNames.length];
+      const currentHostIndex = (hostIndex + idx) % transporters.length;
+      const currentTransporter = transporters[currentHostIndex];
+      const currentHost = smtpHosts[currentHostIndex];
+      
       const mailOptions = {
-        from: `${fromName} <${fromEmail}>`,
+        from: `${currentSenderName} <${fromEmail}>`,
         to: r.email,
         subject: currentSubject,
         html: personalizeTemplate(html, r),
       };
 
-      return transporter.sendMail(mailOptions)
+      return currentTransporter.sendMail(mailOptions)
         .then(() => {
-          console.log(`✔ ${r.email} | Sujet : ${currentSubject}`.green);
+          if (rotationEnabled) {
+            console.log(`✔ ${r.email} | Sujet: ${currentSubject} | De: ${currentSenderName} | Host: ${currentHost}`.green);
+          } else {
+            console.log(`✔ ${r.email} | Sujet: ${currentSubject}`.green);
+          }
           return true;
         })
         .catch(e => {
@@ -113,7 +135,11 @@ const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delay
 
     results.forEach(r => r.status === "fulfilled" && r.value ? sent++ : failed++);
     updateConsoleTitle(sent, recipients.length - sent - failed, failed);
+    
+    // Rotate all indexes
     subjectIndex = (subjectIndex + concurrency) % subjects.length;
+    senderIndex = (senderIndex + concurrency) % senderNames.length;
+    hostIndex = (hostIndex + concurrency) % transporters.length;
 
     if (sent > 0 && sent % 500 === 0) {
       await sendTelegramNotification(`📧 ${sent} e-mails envoyés via Turbo SMTP.`);
