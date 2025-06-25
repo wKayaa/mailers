@@ -74,11 +74,11 @@ const updateConsoleTitle = (sent, rest, failed) => {
 
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
-const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delayMs, port, concurrency) => {
+const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delayMs, port, concurrency, useRotation = false) => {
   const secure = port === 465;
   
-  // Use rotation configuration if enabled and available
-  const rotationEnabled = config.rotation?.enabled === true;
+  // Use rotation configuration if enabled and requested
+  const rotationEnabled = useRotation && config.rotation?.enabled === true;
   const senderNames = rotationEnabled && config.rotation?.senderNames ? config.rotation.senderNames : [fromName];
   const smtpHosts = rotationEnabled && config.rotation?.smtpHosts ? config.rotation.smtpHosts : [config.smtp.host];
   
@@ -184,40 +184,109 @@ const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delay
     const recipients = loadRecipientsFromFile(filePath);
     console.log(`👥 ${recipients.length} destinataires chargés`.yellow.bold);
 
-    const { sendFromEmail, sendFromName, delaySeconds, smtpPort, concurrency } = await prompt([
-      {
-        type: "input",
-        name: "sendFromEmail",
-        message: "✉️ E-mail expéditeur :",
-        validate: input => input.trim() ? true : "Requis.",
-      },
-      {
-        type: "input",
-        name: "sendFromName",
-        message: "👤 Nom expéditeur :",
-        validate: input => input.trim() ? true : "Requis.",
-      },
-      {
-        type: "input",
-        name: "delaySeconds",
-        message: "⏱️ Délai (sec) entre lots :",
-        default: 1,
-        validate: input => parseFloat(input) >= 0 ? true : "Nombre invalide.",
-      },
-      {
-        type: "list",
-        name: "smtpPort",
-        message: "📡 Port SMTP :",
-        choices: [587, 465],
-      },
-      {
-        type: "input",
-        name: "concurrency",
-        message: "🚀 Envois simultanés (concurrency) :",
-        default: 5,
-        validate: input => parseInt(input) > 0 ? true : "Doit être > 0.",
-      },
-    ]);
+    // Check if rotation is available and ask user preference
+    const rotationAvailable = config.rotation?.enabled === true && 
+                              config.rotation?.senderNames?.length > 0 && 
+                              config.rotation?.smtpHosts?.length > 0;
+
+    let useRotation = false;
+    let sendFromEmail, sendFromName, delaySeconds, smtpPort, concurrency;
+
+    if (rotationAvailable) {
+      const { rotationChoice } = await prompt([
+        {
+          type: "list",
+          name: "rotationChoice",
+          message: "🔄 Mode d'envoi :",
+          choices: [
+            { name: `Rotation automatique (${config.rotation.senderNames.length} noms, ${config.rotation.smtpHosts.length} hosts)`, value: "auto" },
+            { name: "Configuration manuelle", value: "manual" }
+          ],
+        },
+      ]);
+
+      useRotation = rotationChoice === "auto";
+    }
+
+    if (useRotation) {
+      console.log(`🔄 Mode rotation activé avec ${config.rotation.senderNames.length} noms et ${config.rotation.smtpHosts.length} hosts`.green.bold);
+      
+      const { manualEmail, delaySeconds: delay, smtpPort: port, concurrency: conc } = await prompt([
+        {
+          type: "input",
+          name: "manualEmail",
+          message: "✉️ E-mail expéditeur (domaine) :",
+          validate: input => input.trim() ? true : "Requis.",
+        },
+        {
+          type: "input",
+          name: "delaySeconds",
+          message: "⏱️ Délai (sec) entre lots :",
+          default: 1,
+          validate: input => parseFloat(input) >= 0 ? true : "Nombre invalide.",
+        },
+        {
+          type: "list",
+          name: "smtpPort",
+          message: "📡 Port SMTP :",
+          choices: [587, 465],
+        },
+        {
+          type: "input",
+          name: "concurrency",
+          message: "🚀 Envois simultanés (concurrency) :",
+          default: 5,
+          validate: input => parseInt(input) > 0 ? true : "Doit être > 0.",
+        },
+      ]);
+
+      sendFromEmail = manualEmail;
+      sendFromName = "Rotation"; // Will be overridden by rotation logic
+      delaySeconds = delay;
+      smtpPort = port;
+      concurrency = conc;
+    } else {
+      const result = await prompt([
+        {
+          type: "input",
+          name: "sendFromEmail",
+          message: "✉️ E-mail expéditeur :",
+          validate: input => input.trim() ? true : "Requis.",
+        },
+        {
+          type: "input",
+          name: "sendFromName",
+          message: "👤 Nom expéditeur :",
+          validate: input => input.trim() ? true : "Requis.",
+        },
+        {
+          type: "input",
+          name: "delaySeconds",
+          message: "⏱️ Délai (sec) entre lots :",
+          default: 1,
+          validate: input => parseFloat(input) >= 0 ? true : "Nombre invalide.",
+        },
+        {
+          type: "list",
+          name: "smtpPort",
+          message: "📡 Port SMTP :",
+          choices: [587, 465],
+        },
+        {
+          type: "input",
+          name: "concurrency",
+          message: "🚀 Envois simultanés (concurrency) :",
+          default: 5,
+          validate: input => parseInt(input) > 0 ? true : "Doit être > 0.",
+        },
+      ]);
+
+      sendFromEmail = result.sendFromEmail;
+      sendFromName = result.sendFromName;
+      delaySeconds = result.delaySeconds;
+      smtpPort = result.smtpPort;
+      concurrency = result.concurrency;
+    }
 
     await sendEmails(
       recipients,
@@ -227,7 +296,8 @@ const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delay
       sendFromName,
       parseFloat(delaySeconds) * 1000,
       smtpPort,
-      parseInt(concurrency)
+      parseInt(concurrency),
+      useRotation
     );
   } catch (e) {
     console.error(`❌ Erreur : ${e.message}`.red);
