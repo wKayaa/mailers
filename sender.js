@@ -74,35 +74,57 @@ const updateConsoleTitle = (sent, rest, failed) => {
 
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
-const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delayMs, port, concurrency) => {
+const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delayMs, port, concurrency, useRotation = false) => {
   const secure = port === 465;
-  const transporter = nodemailer.createTransport({
-    host: config.smtp.host,
-    port,
-    secure,
-    auth: config.smtp.auth,
-  });
-
-  let sent = 0, failed = 0, subjectIndex = 0;
+  
+  // Use rotation configuration if enabled and requested
+  const rotationEnabled = useRotation && config.rotation?.enabled === true;
+  const senderNames = rotationEnabled && config.rotation?.senderNames ? config.rotation.senderNames : [fromName];
+  const smtpHosts = rotationEnabled && config.rotation?.smtpHosts ? config.rotation.smtpHosts : [config.smtp.host];
+  
+  let sent = 0, failed = 0, subjectIndex = 0, senderIndex = 0, hostIndex = 0;
   let i = 0;
+  
+  // Create multiple transporters for host rotation
+  const transporters = smtpHosts.map(host => 
+    nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: config.smtp.auth,
+    })
+  );
 
-  console.log(`📨 Envoi via ${config.smtp.host} (port ${port}) avec ${concurrency} envois simultanés...\n`.cyan);
+  if (rotationEnabled) {
+    console.log(`📨 Envoi avec rotation: ${senderNames.length} noms, ${smtpHosts.length} hosts, ${concurrency} envois simultanés...\n`.cyan);
+  } else {
+    console.log(`📨 Envoi via ${config.smtp.host} (port ${port}) avec ${concurrency} envois simultanés...\n`.cyan);
+  }
 
   while (i < recipients.length) {
     const batch = recipients.slice(i, i + concurrency);
 
     const results = await Promise.allSettled(batch.map((r, idx) => {
       const currentSubject = subjects[(subjectIndex + idx) % subjects.length];
+      const currentSenderName = senderNames[(senderIndex + idx) % senderNames.length];
+      const currentHostIndex = (hostIndex + idx) % transporters.length;
+      const currentTransporter = transporters[currentHostIndex];
+      const currentHost = smtpHosts[currentHostIndex];
+      
       const mailOptions = {
-        from: `${fromName} <${fromEmail}>`,
+        from: `${currentSenderName} <${fromEmail}>`,
         to: r.email,
         subject: currentSubject,
         html: personalizeTemplate(html, r),
       };
 
-      return transporter.sendMail(mailOptions)
+      return currentTransporter.sendMail(mailOptions)
         .then(() => {
-          console.log(`✔ ${r.email} | Sujet : ${currentSubject}`.green);
+          if (rotationEnabled) {
+            console.log(`✔ ${r.email} | Sujet: ${currentSubject} | De: ${currentSenderName} | Host: ${currentHost}`.green);
+          } else {
+            console.log(`✔ ${r.email} | Sujet: ${currentSubject}`.green);
+          }
           return true;
         })
         .catch(e => {
@@ -113,7 +135,11 @@ const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delay
 
     results.forEach(r => r.status === "fulfilled" && r.value ? sent++ : failed++);
     updateConsoleTitle(sent, recipients.length - sent - failed, failed);
+    
+    // Rotate all indexes
     subjectIndex = (subjectIndex + concurrency) % subjects.length;
+    senderIndex = (senderIndex + concurrency) % senderNames.length;
+    hostIndex = (hostIndex + concurrency) % transporters.length;
 
     if (sent > 0 && sent % 500 === 0) {
       await sendTelegramNotification(`📧 ${sent} e-mails envoyés via Turbo SMTP.`);
@@ -158,40 +184,109 @@ const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delay
     const recipients = loadRecipientsFromFile(filePath);
     console.log(`👥 ${recipients.length} destinataires chargés`.yellow.bold);
 
-    const { sendFromEmail, sendFromName, delaySeconds, smtpPort, concurrency } = await prompt([
-      {
-        type: "input",
-        name: "sendFromEmail",
-        message: "✉️ E-mail expéditeur :",
-        validate: input => input.trim() ? true : "Requis.",
-      },
-      {
-        type: "input",
-        name: "sendFromName",
-        message: "👤 Nom expéditeur :",
-        validate: input => input.trim() ? true : "Requis.",
-      },
-      {
-        type: "input",
-        name: "delaySeconds",
-        message: "⏱️ Délai (sec) entre lots :",
-        default: 1,
-        validate: input => parseFloat(input) >= 0 ? true : "Nombre invalide.",
-      },
-      {
-        type: "list",
-        name: "smtpPort",
-        message: "📡 Port SMTP :",
-        choices: [587, 465],
-      },
-      {
-        type: "input",
-        name: "concurrency",
-        message: "🚀 Envois simultanés (concurrency) :",
-        default: 5,
-        validate: input => parseInt(input) > 0 ? true : "Doit être > 0.",
-      },
-    ]);
+    // Check if rotation is available and ask user preference
+    const rotationAvailable = config.rotation?.enabled === true && 
+                              config.rotation?.senderNames?.length > 0 && 
+                              config.rotation?.smtpHosts?.length > 0;
+
+    let useRotation = false;
+    let sendFromEmail, sendFromName, delaySeconds, smtpPort, concurrency;
+
+    if (rotationAvailable) {
+      const { rotationChoice } = await prompt([
+        {
+          type: "list",
+          name: "rotationChoice",
+          message: "🔄 Mode d'envoi :",
+          choices: [
+            { name: `Rotation automatique (${config.rotation.senderNames.length} noms, ${config.rotation.smtpHosts.length} hosts)`, value: "auto" },
+            { name: "Configuration manuelle", value: "manual" }
+          ],
+        },
+      ]);
+
+      useRotation = rotationChoice === "auto";
+    }
+
+    if (useRotation) {
+      console.log(`🔄 Mode rotation activé avec ${config.rotation.senderNames.length} noms et ${config.rotation.smtpHosts.length} hosts`.green.bold);
+      
+      const { manualEmail, delaySeconds: delay, smtpPort: port, concurrency: conc } = await prompt([
+        {
+          type: "input",
+          name: "manualEmail",
+          message: "✉️ E-mail expéditeur (domaine) :",
+          validate: input => input.trim() ? true : "Requis.",
+        },
+        {
+          type: "input",
+          name: "delaySeconds",
+          message: "⏱️ Délai (sec) entre lots :",
+          default: 1,
+          validate: input => parseFloat(input) >= 0 ? true : "Nombre invalide.",
+        },
+        {
+          type: "list",
+          name: "smtpPort",
+          message: "📡 Port SMTP :",
+          choices: [587, 465],
+        },
+        {
+          type: "input",
+          name: "concurrency",
+          message: "🚀 Envois simultanés (concurrency) :",
+          default: 5,
+          validate: input => parseInt(input) > 0 ? true : "Doit être > 0.",
+        },
+      ]);
+
+      sendFromEmail = manualEmail;
+      sendFromName = "Rotation"; // Will be overridden by rotation logic
+      delaySeconds = delay;
+      smtpPort = port;
+      concurrency = conc;
+    } else {
+      const result = await prompt([
+        {
+          type: "input",
+          name: "sendFromEmail",
+          message: "✉️ E-mail expéditeur :",
+          validate: input => input.trim() ? true : "Requis.",
+        },
+        {
+          type: "input",
+          name: "sendFromName",
+          message: "👤 Nom expéditeur :",
+          validate: input => input.trim() ? true : "Requis.",
+        },
+        {
+          type: "input",
+          name: "delaySeconds",
+          message: "⏱️ Délai (sec) entre lots :",
+          default: 1,
+          validate: input => parseFloat(input) >= 0 ? true : "Nombre invalide.",
+        },
+        {
+          type: "list",
+          name: "smtpPort",
+          message: "📡 Port SMTP :",
+          choices: [587, 465],
+        },
+        {
+          type: "input",
+          name: "concurrency",
+          message: "🚀 Envois simultanés (concurrency) :",
+          default: 5,
+          validate: input => parseInt(input) > 0 ? true : "Doit être > 0.",
+        },
+      ]);
+
+      sendFromEmail = result.sendFromEmail;
+      sendFromName = result.sendFromName;
+      delaySeconds = result.delaySeconds;
+      smtpPort = result.smtpPort;
+      concurrency = result.concurrency;
+    }
 
     await sendEmails(
       recipients,
@@ -201,7 +296,8 @@ const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delay
       sendFromName,
       parseFloat(delaySeconds) * 1000,
       smtpPort,
-      parseInt(concurrency)
+      parseInt(concurrency),
+      useRotation
     );
   } catch (e) {
     console.error(`❌ Erreur : ${e.message}`.red);

@@ -11,7 +11,27 @@
     "botToken": "8101211825:AAEIUW0c6ucBsQ_GlHHrIuhPoHucm4mr2qM",
     "chatId": "-458649954"
   },
-  "senderName": "Support"
+  "senderName": "Support",
+  "rotation": {
+    "enabled": true,
+    "senderNames": [
+      "Support",
+      "Help Desk", 
+      "Customer Service",
+      "Technical Support",
+      "Service Team",
+      "Customer Care",
+      "Client Support",
+      "Assistance Team"
+    ],
+    "smtpHosts": [
+      "email-smtp.eu-west-2.amazonaws.com",
+      "email-smtp.us-west-2.amazonaws.com",
+      "email-smtp.us-east-1.amazonaws.com",
+      "email-smtp.eu-central-1.amazonaws.com",
+      "email-smtp.ap-southeast-1.amazonaws.com"
+    ]
+  }
 }
 
   
