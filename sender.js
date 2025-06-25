@@ -74,7 +74,16 @@ const updateConsoleTitle = (sent, rest, failed) => {
 
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
-const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delayMs, port, concurrency) => {
+const generateRandomEncryptedString = () => {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < 18; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+};
+
+const sendEmails = async (recipients, subjects, html, fromDomain, fromName, delayMs, port, concurrency) => {
   const secure = port === 465;
   const transporter = nodemailer.createTransport({
     host: config.smtp.host,
@@ -93,8 +102,10 @@ const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delay
 
     const results = await Promise.allSettled(batch.map((r, idx) => {
       const currentSubject = subjects[(subjectIndex + idx) % subjects.length];
+      // Generate unique encrypted email for each recipient
+      const uniqueFromEmail = `${generateRandomEncryptedString()}@${fromDomain}`;
       const mailOptions = {
-        from: `${fromName} <${fromEmail}>`,
+        from: `${fromName} <${uniqueFromEmail}>`,
         to: r.email,
         subject: currentSubject,
         html: personalizeTemplate(html, r),
@@ -102,7 +113,7 @@ const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delay
 
       return transporter.sendMail(mailOptions)
         .then(() => {
-          console.log(`✔ ${r.email} | Sujet : ${currentSubject}`.green);
+          console.log(`✔ ${r.email} | Sujet : ${currentSubject} | From: ${uniqueFromEmail}`.green);
           return true;
         })
         .catch(e => {
@@ -158,12 +169,18 @@ const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delay
     const recipients = loadRecipientsFromFile(filePath);
     console.log(`👥 ${recipients.length} destinataires chargés`.yellow.bold);
 
-    const { sendFromEmail, sendFromName, delaySeconds, smtpPort, concurrency } = await prompt([
+    const { sendFromDomain, sendFromName, delaySeconds, smtpPort, concurrency } = await prompt([
       {
         type: "input",
-        name: "sendFromEmail",
-        message: "✉️ E-mail expéditeur :",
-        validate: input => input.trim() ? true : "Requis.",
+        name: "sendFromDomain",
+        message: "🌐 Domaine expéditeur (ex: example.com) :",
+        validate: input => {
+          const domain = input.trim();
+          if (!domain) return "Requis.";
+          if (domain.includes("@")) return "Saisissez uniquement le domaine (sans @).";
+          if (!domain.includes(".")) return "Format de domaine invalide.";
+          return true;
+        },
       },
       {
         type: "input",
@@ -197,7 +214,7 @@ const sendEmails = async (recipients, subjects, html, fromEmail, fromName, delay
       recipients,
       subjects,
       html,
-      sendFromEmail,
+      sendFromDomain,
       sendFromName,
       parseFloat(delaySeconds) * 1000,
       smtpPort,
