@@ -1,0 +1,17 @@
+
+{
+  "smtp": {
+    "host": "email-smtp.eu-west-2.amazonaws.com",
+    "auth": {
+      "user": "AKIAUGCYGFYKIPBACMEZ",
+      "pass": "BLFyEmLOaNyfN+uWDzK1Qq7xEH0lf0WWWOtPF0kmoJQN"
+    }
+  },
+  "telegram": {
+    "botToken": "8101211825:AAEIUW0c6ucBsQ_GlHHrIuhPoHucm4mr2qM",
+    "chatId": "-458649954"
+  },
+  "senderName": "Support"
+}
+
+  
